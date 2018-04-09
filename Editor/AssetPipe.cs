@@ -631,14 +631,14 @@ namespace Sigtrap.AssetPipe {
 			float progress = -1;
 			if (MatchSceneObject(data, info.matchObject)){
 				if (MatchSceneComponent(data, info.matchComponent)){
+					var p = new SceneObjectProcessData(
+						data.scene, data.gameObject, data.root, currentObject.value,
+						currentRoot, rootCount, currentScene, sceneCount
+					);
 					if (info.onProcessObject != null){
-						var p = new SceneObjectProcessData(
-							data.scene, data.gameObject, data.root, currentObject.value,
-							currentRoot, rootCount, currentScene, sceneCount
-						);
 						info.onProcessObject(p);
-						progress = p.progressTotal;
 					}
+					progress = p.progressTotal;
 					if (outMatches != null) outMatches.Add(data);
 				}
 			}
@@ -920,7 +920,7 @@ namespace Sigtrap.AssetPipe {
 			return DisplayProgressBar(title, i, count, pt == ProcessType.BLOCKING_CANCELABLE, infoFormat);
 		}
 		static bool DisplayProgressBar(string title, float progress, ProcessType pt, string infoFormat="{0}%"){
-			return DisplayProgressBar(title, string.Format(infoFormat, progress*100f), pt == ProcessType.BLOCKING_CANCELABLE, progress);
+			return DisplayProgressBar(title, string.Format(infoFormat, Mathf.Floor(progress*100f)), pt == ProcessType.BLOCKING_CANCELABLE, progress);
 		}
 		static void ClearProgressBar(){
 			EditorUtility.ClearProgressBar();
