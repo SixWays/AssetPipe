@@ -58,6 +58,15 @@ namespace Sigtrap.AssetPipe {
 		public ProcessType processType = ProcessType.BLOCKING;
 		/// <summary></summary>
 		public double tickTime = 0.1f;
+
+		/// <summary></summary>
+		public abstract System.Guid StartProcess();
+	}
+	public abstract class ProcessObjectInfoBase : ProcessInfoBase {
+		/// <summary></summary>
+		public GameObject[] selection;
+
+		public bool hasSelection {get {return selection != null && selection.Length > 0;}}
 	}
 
 	#region Asset Processing
@@ -70,13 +79,21 @@ namespace Sigtrap.AssetPipe {
 		public AssetMatcher<T> match;
 		/// <summary></summary>
 		public System.Action<List<AssetMetadata<T>>> onResults;
+		/// <summary></summary>
+		public T[] selection;
+
+		public bool hasSelection {get {return selection != null && selection.Length > 0;}}
 
 		public ProcessAssetsInfo(string filter, System.Action<AssetProcessData<T>> onProcessAsset){
 			this.filter = filter;
 			this.onProcessAsset = onProcessAsset;
 		}
+
+		public override System.Guid StartProcess(){
+			return Pipeline.ProcessAssets(this);
+		}
 	}
-	public sealed class ProcessPrefabsInfo<T> : ProcessInfoBase where T:Component {
+	public sealed class ProcessPrefabsInfo<T> : ProcessObjectInfoBase where T:Component {
 		/// <summary>Asset filter string. Uses Unity project window search syntax.</summary>
 		public string filter = Pipeline.DEFAULT_FILTER;
 		/// <summary></summary>
@@ -87,12 +104,17 @@ namespace Sigtrap.AssetPipe {
 		public ComponentMatcher<T> matchComponent;
 		/// <summary></summary>
 		public System.Action<List<AssetMetadata<GameObject>>> onResults;
+		
 
 		public ProcessPrefabsInfo(System.Action<PrefabProcessData> onProcessPrefab){
 			this.onProcessPrefab = onProcessPrefab;
 		}
+
+		public override System.Guid StartProcess(){
+			return Pipeline.ProcessPrefabs(this);
+		}
 	}
-	public sealed class ProcessComponentsInfo<T> : ProcessInfoBase where T:Component {
+	public sealed class ProcessComponentsInfo<T> : ProcessObjectInfoBase where T:Component {
 		/// <summary>Asset filter string. Uses Unity project window search syntax.</summary>
 		public string filter = Pipeline.DEFAULT_FILTER;
 		/// <summary></summary>
@@ -108,6 +130,10 @@ namespace Sigtrap.AssetPipe {
 
 		public ProcessComponentsInfo(System.Action<ComponentProcessData<T>> onProcessComponent){
 			this.onProcessComponent = onProcessComponent;
+		}
+
+		public override System.Guid StartProcess(){
+			return Pipeline.ProcessComponents(this);
 		}
 	}
 	#endregion
@@ -150,7 +176,7 @@ namespace Sigtrap.AssetPipe {
 		}
 	}
 
-	public abstract class ProcessSceneInfoBase : ProcessInfoBase {
+	public abstract class ProcessSceneInfoBase<T> : ProcessObjectInfoBase where T:Component {
 		/// <summary></summary>
 		public GameObject[] roots;
 		/// <summary></summary>
@@ -159,39 +185,48 @@ namespace Sigtrap.AssetPipe {
 		public string[] scenePaths;
 		/// <summary></summary>
 		public StringMatcher nameMatch;
+		/// <summary></summary>
+		public SceneComponentMatcher<T> matchComponent;
+		/// <summary></summary>
+		public SceneObjectMatcher matchObject;
+
+		public bool hasRoots {get {return roots != null && roots.Length > 0;}}
+		public bool hasScenes {get {return scenePaths != null && scenePaths.Length > 0;}}
 
 		public ProcessSceneInfoBase(SceneSaveMode saveMode){
 			this.saveMode = saveMode;
 		}
 	}
 
-	public sealed class ProcessSceneObjectsInfo<T> : ProcessSceneInfoBase where T:Component {
+	public sealed class ProcessSceneObjectsInfo<T> : ProcessSceneInfoBase<T> where T:Component {
 		/// <summary></summary>
 		public System.Action<SceneObjectProcessData> onProcessObject;
-		/// <summary></summary>
-		public SceneObjectMatcher matchObject;
-		/// <summary></summary>
-		public SceneComponentMatcher<T> matchComponent;
 		/// <summary></summary>
 		public System.Action<List<SceneObjectMetadata>> onResults;
 
 		public ProcessSceneObjectsInfo(System.Action<SceneObjectProcessData> onProcessObject, SceneSaveMode saveMode) : base(saveMode){
 			this.onProcessObject = onProcessObject;
 		}
+
+		public override System.Guid StartProcess(){
+			return Pipeline.ProcessSceneObjects(this);
+		}
 	}
 
-	public sealed class ProcessSceneComponentsInfo<T> : ProcessSceneInfoBase where T:Component {
+	public sealed class ProcessSceneComponentsInfo<T> : ProcessSceneInfoBase<T> where T:Component {
 		/// <summary></summary>
-		ComponentSearchType componentSearchType;
+		public ComponentSearchType componentSearchType;
 		/// <summary></summary>
 		public System.Action<SceneComponentProcessData<T>> onProcessComponent;
-		/// <summary></summary>
-		public SceneComponentMatcher<T> matchComponent;
 		/// <summary></summary>
 		public System.Action<Dictionary<SceneObjectMetadata, List<T>>> onResults;
 
 		public ProcessSceneComponentsInfo(System.Action<SceneComponentProcessData<T>> onProcessComponent, SceneSaveMode saveMode) : base(saveMode){
 			this.onProcessComponent = onProcessComponent;
+		}
+
+		public override System.Guid StartProcess(){
+			return Pipeline.ProcessSceneComponents(this);
 		}
 	}
 	#endregion
@@ -426,7 +461,12 @@ namespace Sigtrap.AssetPipe {
 		#region Process Scene Objects
 		public static System.Guid ProcessSceneObjects<T>(ProcessSceneObjectsInfo<T> info) where T:Component {
 			var pid = System.Guid.NewGuid();
-			AssetPipeProcessManager.StartProcess(ProcessSceneObjectsAsync<T>(pid, info), info.onDone, pid);
+			AssetPipeProcessManager.StartProcess(ProcessSceneAsync<T>(pid, info), info.onDone, pid);
+			return pid;
+		}
+		public static System.Guid ProcessSceneComponents<T>(ProcessSceneComponentsInfo<T> info) where T:Component {
+			var pid = System.Guid.NewGuid();
+			AssetPipeProcessManager.StartProcess(ProcessSceneAsync<T>(pid, info), info.onDone, pid);
 			return pid;
 		}
 		#endregion
@@ -620,106 +660,103 @@ namespace Sigtrap.AssetPipe {
 		}
 		#endregion
 
-		#region Scene Object Coroutines
-		class IntRef {
-			public int value = 0;
+		#region Scene Coroutines
+		class ValRef<T> where T:struct {
+			public T value;
 		}
-		static IEnumerator ProcessSceneObjectsRecursive<T>(
-			SceneObjectMetadata data, ProcessSceneObjectsInfo<T> info, List<SceneObjectMetadata> outMatches, 
-			int currentRoot, int rootCount, int currentScene, int sceneCount, IntRef currentObject
-		) where T:Component {
-			float progress = -1;
-			if (MatchSceneObject(data, info.matchObject)){
-				if (MatchSceneComponent(data, info.matchComponent)){
-					var p = new SceneObjectProcessData(
-						data.scene, data.gameObject, data.root, currentObject.value,
-						currentRoot, rootCount, currentScene, sceneCount
-					);
-					if (info.onProcessObject != null){
-						info.onProcessObject(p);
-					}
-					progress = p.progressTotal;
-					if (outMatches != null) outMatches.Add(data);
-				}
-			}
 
-			++currentObject.value;
-			yield return progress;
-			
-			foreach (Transform child in data.gameObject.transform){
-				var d = new SceneObjectMetadata(data.scene, child.gameObject, data.root);
-				var loop = ProcessSceneObjectsRecursive(
-					d, info, outMatches, currentRoot, rootCount, 
-					currentScene, sceneCount, currentObject
-				);
-				while (loop.MoveNext()){
-					yield return loop.Current;
-				}
-			}
-		}
-		static IEnumerator ProcessSceneObjectsAsync<T>(System.Guid processId, ProcessSceneObjectsInfo<T> info) where T:Component {
+		#region Scene Objects
+		static IEnumerator ProcessSceneAsync<T>(System.Guid processId, ProcessSceneInfoBase<T> info) where T:Component {
 			var sw = new System.Diagnostics.Stopwatch();
-			double lastTick = 0;
+			ValRef<double> lastTick = new ValRef<double>();
 			sw.Start();
 
-			bool loadScenes = info.scenePaths != null && info.scenePaths.Length > 0;
-			int sceneCount = loadScenes ? info.scenePaths.Length : 1;
-			if (info.roots != null && info.roots.Length > 0 && loadScenes){
+			int sceneCount = info.hasScenes ? info.scenePaths.Length : 1;
+			if (info.hasRoots && info.hasScenes){
 				AbortProcess(processId, "Cannot have multiple scenes and specified root objects");
 			}
+			if (info.hasSelection && info.hasScenes){
+				AbortProcess(processId, "Cannot have multiple scenes and specified object selection");
+			}
+			if (info.hasSelection && info.hasRoots){
+				AbortProcess(processId, "Cannot have specified root objects and specified object selection");
+			}
 
-			List<SceneObjectMetadata> results = null;
-			if (info.onResults != null) results = new List<SceneObjectMetadata>();
+			#region Casts and Outputs
+			var infoObj = info as ProcessSceneObjectsInfo<T>;
+			var infoCmp = info as ProcessSceneComponentsInfo<T>;
 
-			bool cancelled = false;
-			IntRef k = new IntRef();
-			float progress = 0;
+			List<SceneObjectMetadata> resultsObj = null;
+			if (infoObj != null && infoObj.onResults != null){
+				resultsObj = new List<SceneObjectMetadata>();
+			}
+			Dictionary<SceneObjectMetadata, List<T>> resultsCmp = null;
+			if (infoCmp != null && infoCmp.onResults != null){
+				resultsCmp = new Dictionary<SceneObjectMetadata, List<T>>();
+			}
+			#endregion
+
+			ValRef<bool> cancelled = new ValRef<bool>();
+			ValRef<int> k = new ValRef<int>();
+			ValRef<float> progress = new ValRef<float>();
 
 			for (int i=0; i<sceneCount; ++i){
-				if (loadScenes){
+				if (info.hasScenes){
 					Scene s = UnityEditor.SceneManagement.EditorSceneManager.OpenScene(info.scenePaths[i]);
 					UnityEditor.SceneManagement.EditorSceneManager.SetActiveScene(s);
 				}
 
 				Scene scene = SceneManager.GetActiveScene();
-				GameObject[] roots = null;
-				if (info.roots != null && info.roots.Length > 0){
-					roots = info.roots;
-				} else {
-					roots = scene.GetRootGameObjects();
-				}
 
-				for (int j=0; j<roots.Length; ++j){
-					if (roots[i] == null){
-						Debug.LogWarningFormat("Root object {0} is null - skippng", j);
-					}
-					
-					var meta = new SceneObjectMetadata(scene, roots[j], roots[j]);
-					k.value = 0;
-					var loop = ProcessSceneObjectsRecursive(
-						meta, info, results, j, roots.Length, i, sceneCount, k
-					);
+				if (info.hasSelection){
+					#region Selection Mode
+					for (int j=0; j<info.selection.Length; ++j){
+						var meta = new SceneObjectMetadata(scene, info.selection[j], null);
+						var loop = LoopSceneProcess<T>(
+							ProcessSceneIterative(
+								processId, meta, info, infoObj, infoCmp, SelectionType.OBJECTS, j, 0,
+								i, sceneCount, j, info.selection.Length, resultsObj, null
+							), info, sw, lastTick, progress, cancelled
+						);
 
-					while (loop.MoveNext()){
-						if (info.processType == ProcessType.ASYNC){
-							if (CheckTime(sw, ref lastTick, info.tickTime)){
-								yield return null;								// Wait for next editor update
-							}
-						} else {
-							float p = (float)loop.Current;
-							if (p > progress) progress = p;
-							if (DisplayProgressBar("Processing Scene Objects", progress, info.processType)){
-								ClearProgressBar();
-								cancelled = true;
-								break;
-							}
+						while (loop.MoveNext()){
+							yield return null;
 						}
+						if (cancelled.value) break;
+					}
+					#endregion
+				} else {
+					#region Roots Mode
+					GameObject[] roots = null;
+					if (info.hasRoots){
+						roots = info.roots;
+					} else {
+						roots = scene.GetRootGameObjects();
 					}
 
-					if (cancelled) break;
+					for (int j=0; j<roots.Length; ++j){
+						if (roots[i] == null){
+							Debug.LogWarningFormat("Root object {0} is null - skippng", j);
+						}
+						
+						var meta = new SceneObjectMetadata(scene, roots[j], roots[j]);
+						k.value = 0;
+						var loop = LoopSceneProcess<T>(
+							ProcessSceneRecursive(
+								processId, meta, info, infoObj, infoCmp, j, roots.Length, 
+								i, sceneCount, !info.hasRoots, k, resultsObj, null
+							), info, sw, lastTick, progress, cancelled
+						);
+
+						while (loop.MoveNext()){
+							yield return null;
+						}
+						if (cancelled.value) break;
+					}
+					#endregion
 				}
 
-				if (cancelled) break;
+				if (cancelled.value) break;
 
 				switch (info.saveMode){
 					case SceneSaveMode.AUTO:
@@ -729,18 +766,19 @@ namespace Sigtrap.AssetPipe {
 						UnityEditor.SceneManagement.EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();
 						break;
 					case SceneSaveMode.NONE:
-						if (loadScenes){
+						if (info.hasScenes){
 							UnityEditor.SceneManagement.EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();
 						}
 						break;
 				}
 			}
 						
-			if (info.onResults != null) info.onResults(results);
+			if (resultsObj != null) infoObj.onResults(resultsObj);
+			if (resultsCmp != null) infoCmp.onResults(resultsCmp);
 			if (info.onDone != null) info.onDone(
 				new ProcessDoneData(
 					processId, null, sw,
-					cancelled ? ProcessExitStatus.CANCELLED : ProcessExitStatus.SUCCESS					
+					cancelled.value ? ProcessExitStatus.CANCELLED : ProcessExitStatus.SUCCESS					
 				) 
 			);
 			
@@ -748,6 +786,137 @@ namespace Sigtrap.AssetPipe {
 				ClearProgressBar();
 			}
 		}
+		static IEnumerator LoopSceneProcess<T>(
+			IEnumerator loop, ProcessSceneInfoBase<T> info, System.Diagnostics.Stopwatch sw,
+			ValRef<double> lastTick, ValRef<float> progress, ValRef<bool> cancelled
+		) where T:Component {
+			while (loop.MoveNext()){
+				if (info.processType == ProcessType.ASYNC){
+					if (CheckTime(sw, lastTick, info.tickTime)){
+						yield return null;								// Wait for next editor update
+					}
+				} else {
+					float p = (float)loop.Current;
+					if (p > progress.value) progress.value = p;
+					if (DisplayProgressBar("Processing Scene Objects", progress.value, info.processType)){
+						ClearProgressBar();
+						cancelled.value = true;
+						break;
+					}
+				}
+			}
+		}
+		static IEnumerator ProcessSceneRecursive<T>(
+			System.Guid processId, SceneObjectMetadata data, ProcessSceneInfoBase<T> infoBase,
+			ProcessSceneObjectsInfo<T> infoAsObj, ProcessSceneComponentsInfo<T> infoAsComp, int currentRoot, 
+			int rootCount, int currentScene, int sceneCount, bool autoRoots, ValRef<int> currentObject,
+			List<SceneObjectMetadata> outObjResults, Dictionary<SceneObjectMetadata, List<T>> outCmpResults
+		) where T:Component {
+			SelectionType st = autoRoots ? SelectionType.ROOTS_AUTO : SelectionType.ROOTS_MANUAL;
+			var process = ProcessSceneIterative<T>(
+				processId, data, infoBase, infoAsObj, infoAsComp, st, currentRoot, rootCount, 
+				currentScene, sceneCount, currentObject.value, -1, outObjResults, outCmpResults
+			);
+
+			float progress = 0;
+			while (process.MoveNext()){
+				if (process.Current != null){
+					progress = (float)process.Current;
+				}
+				yield return progress;
+			}
+
+			++currentObject.value;
+			yield return progress;
+			
+			foreach (Transform child in data.gameObject.transform){
+				var d = new SceneObjectMetadata(data.scene, child.gameObject, data.root);
+				var loop = ProcessSceneRecursive(
+					processId, d, infoBase, infoAsObj, infoAsComp, currentRoot, rootCount, 
+					currentScene, sceneCount, autoRoots, currentObject, outObjResults, outCmpResults
+				);
+				while (loop.MoveNext()){
+					yield return loop.Current;
+				}
+			}
+		}
+		static IEnumerator ProcessSceneIterative<T>(
+			System.Guid processId, SceneObjectMetadata data, ProcessSceneInfoBase<T> infoBase,
+			ProcessSceneObjectsInfo<T> infoAsObj, ProcessSceneComponentsInfo<T> infoAsComp, 
+			SelectionType selectionType, int currentRoot, int rootCount,
+			int currentScene, int sceneCount, int currentObject, int objectCount,
+			List<SceneObjectMetadata> outObjResults, Dictionary<SceneObjectMetadata, List<T>> outCmpResults
+		) where T:Component {
+			if (infoAsComp == null && infoAsObj == null){
+				Pipeline.AbortProcess(processId, "Must provide either ProcessSceneObjectsInfo or ProcessSceneComponentsInfo to ProcessSceneObjectsIterative");
+			}
+			if (selectionType == SelectionType.OBJECTS && objectCount <= 0){
+				Pipeline.AbortProcess(processId, "In object selection mode, must pass total object count to ProcessSceneObjectsIterative");
+			}
+			float progress = -1;
+			if (MatchSceneObject(data, infoBase.matchObject)){
+				if (infoAsObj != null){
+					#region Object Mode
+					if (MatchSceneComponent(data, infoBase.matchComponent)){
+						SceneObjectProcessData p;
+						if (selectionType != SelectionType.OBJECTS){
+							p = new SceneObjectProcessData(
+								data.scene, data.gameObject, data.root, currentObject,
+								currentRoot, rootCount, currentScene, sceneCount, selectionType
+							);
+						} else {
+							p = new SceneObjectProcessData(
+								data.scene, data.gameObject, currentObject, objectCount
+							);
+						}
+						if (infoAsObj.onProcessObject != null){
+							infoAsObj.onProcessObject(p);
+						}
+						progress = p.progressTotal;
+						if (outObjResults != null) outObjResults.Add(data);
+					}
+					#endregion
+				} else {
+					#region Component Mode
+					var ts = GetComponents<T>(data.gameObject, infoAsComp.componentSearchType);
+					for (int i=0; i<ts.Length; ++i){
+						T t = ts[i];
+						if (MatchSceneComponent(data, infoBase.matchComponent)){
+							SceneComponentProcessData<T> p;
+							if (selectionType != SelectionType.OBJECTS){
+								p = new SceneComponentProcessData<T>(
+									data.scene, t, data.root, currentObject, i, ts.Length,
+									currentRoot, rootCount, currentScene, sceneCount, selectionType
+								);
+							} else {
+								p = new SceneComponentProcessData<T>(
+									data.scene, t, currentObject, i, ts.Length, objectCount
+								);
+							}
+							if (infoAsComp.onProcessComponent != null){
+								infoAsComp.onProcessComponent(p);
+							}
+							progress = p.progressTotal;
+							if (outCmpResults != null){
+								List<T> l = null;
+								if (!outCmpResults.TryGetValue(data, out l)){
+									l = new List<T>();
+									outCmpResults.Add(data, l);
+								}
+								l.Add(t);
+							}
+							yield return progress;
+						}
+					}
+					#endregion
+				}
+			}
+		}
+		#endregion
+
+		#region Scene Components
+		// TODO
+		#endregion
 		#endregion		
 
 		#region Coroutine implementation
@@ -934,6 +1103,9 @@ namespace Sigtrap.AssetPipe {
 			}
 			return false;
 		}
+		static bool CheckTime(System.Diagnostics.Stopwatch sw, ValRef<double> lastTick, double tickTime){
+			return CheckTime(sw, ref lastTick.value, tickTime);
+		}
 		#endregion
 		#endregion
 	}
@@ -944,6 +1116,7 @@ namespace Sigtrap.AssetPipe.Data {
 	public struct ProcessProgress {
 		public int index {get; private set;}
 		public int assetCount {get; private set;}
+		public bool isValid {get {return assetCount > 0;}}
 		public float progress {
 			get {
 				return ((float)(index+1))/((float)assetCount);
@@ -1039,27 +1212,59 @@ namespace Sigtrap.AssetPipe.Data {
 			this.root = root;
 		}
 	}
-	public struct SceneObjectProcessData {
+	public enum SelectionType {
+		/// <summary>Scene root objects automatically recursed within one or more scenes</summary>
+		ROOTS_AUTO,
+		/// <summary>User-specified root objects recursed within a single scene</summary>
+		ROOTS_MANUAL,
+		/// <summary>User-specified objects iterated within a single scene</summary>
+		OBJECTS
+	}
+	public struct SceneObjectProcessData {	
+		public SelectionType selectionType {get; private set;}
 		public GameObject gameObject {get; private set;}
 		public SceneObjectMetadata metadata {get; private set;}
 		public int currentObject {get; private set;}
+		public ProcessProgress progressObjects {get; private set;}
 		public ProcessProgress progressRoots {get; private set;}
 		public ProcessProgress progressScenes {get; private set;}
 		public float progressTotal {get; private set;}
 
-		public SceneObjectProcessData(
-			Scene scene, GameObject gameObject, GameObject root, 
-			int currentObject, int currentRoot, int rootCount, 
-			int currentScene, int sceneCount
-		){
+		private SceneObjectProcessData(
+			Scene scene, GameObject gameObject, GameObject root, int currentObject
+		) : this(){
 			this.gameObject = gameObject;
 			metadata = new SceneObjectMetadata(scene, gameObject, root);
 			this.currentObject = currentObject;
+		}
+
+		/// <summary>
+		/// Create a new SceneObjectProcessData using root objects for recursion
+		/// </summary>
+		public SceneObjectProcessData(
+			Scene scene, GameObject gameObject, GameObject root, 
+			int currentObject, int currentRoot, int rootCount, 
+			int currentScene, int sceneCount, SelectionType selectionType
+		) : this(scene, gameObject, root, currentObject){
+			if (selectionType == SelectionType.OBJECTS){
+				throw new System.Exception("Cannot use OBJECTS mode for recursive process data");
+			}
+			this.selectionType = selectionType;
 			progressRoots = new ProcessProgress(currentRoot, rootCount);
 			progressScenes = new ProcessProgress(currentScene, sceneCount);
 			progressTotal = 
 				(float)(currentRoot + (currentScene * rootCount)) / 
 				(float)(rootCount * sceneCount);
+		}
+
+		/// <summary>
+		/// Create a new SceneObjectProcessData using object selection for iteration
+		/// </summary>
+		public SceneObjectProcessData(
+			Scene scene, GameObject gameObject, int currentObject, int objectCount
+		) : this(scene, gameObject, null, currentObject){
+			this.selectionType = SelectionType.OBJECTS;
+			progressObjects = new ProcessProgress(currentObject, objectCount);
 		}
 	}
 	public struct SceneComponentData<T> where T:Component {
@@ -1072,28 +1277,57 @@ namespace Sigtrap.AssetPipe.Data {
 		}
 	}
 	public struct SceneComponentProcessData<T> where T:Component {
+		public SelectionType selectionType {get; private set;}
 		public T component {get; private set;}
 		public SceneObjectMetadata metadata {get; private set;}
 		public ProcessProgress progressComponents {get; private set;}
 		public int currentObject {get; private set;}
 		public ProcessProgress progressObjects {get; private set;}
+		public ProcessProgress progressRoots {get; private set;}
 		public ProcessProgress progressScenes {get; private set;}
 		public float progressTotal {get; private set;}
 
-		public SceneComponentProcessData(
-			Scene scene, T component, GameObject root, 
-			int currentObject, int currentComponent, int componentCount,
-			int currentRoot, int rootCount, int currentScene, int sceneCount
-		){
+		private SceneComponentProcessData(
+			Scene scene, T component, GameObject root, int currentObject, 
+			int currentComponent, int componentCount
+		) : this(){
 			this.component = component;
 			metadata = new SceneObjectMetadata(scene, component.gameObject, root);
 			this.currentObject = currentObject;
 			progressComponents = new ProcessProgress(currentComponent, componentCount);
-			progressObjects = new ProcessProgress(currentRoot, rootCount);
+		}
+
+		/// <summary>
+		/// Create a new SceneObjectProcessData using root objects for recursion
+		/// </summary>
+		public SceneComponentProcessData(
+			Scene scene, T component, GameObject root, int currentObject, 
+			int currentComponent, int componentCount, int currentRoot, 
+			int rootCount, int currentScene, int sceneCount, SelectionType selectionType
+		) : this(scene, component, root, currentObject, currentComponent, componentCount){
+			if (selectionType == SelectionType.OBJECTS){
+				throw new System.Exception("Cannot use OBJECTS mode for recursive process data");
+			}
+			this.selectionType = selectionType;
+			progressRoots = new ProcessProgress(currentRoot, rootCount);
 			progressScenes = new ProcessProgress(currentScene, sceneCount);
 			progressTotal = 
 				(float)(currentRoot + (currentScene * rootCount)) / 
 				(float)(rootCount * sceneCount);
+		}
+
+		/// <summary>
+		/// Create a new SceneObjectProcessData using object selection for iteration
+		/// </summary>
+		public SceneComponentProcessData(
+			Scene scene, T component, int currentObject,
+			int currentComponent, int componentCount, int objectCount
+		) : this(scene, component, null, currentObject, currentComponent, componentCount){
+			this.selectionType = SelectionType.OBJECTS;
+			progressObjects = new ProcessProgress(currentObject, objectCount);
+			progressTotal = 
+				(float)(currentComponent + (currentObject * componentCount)) / 
+				(float)(componentCount * componentCount);
 		}
 	}
 	#endregion
