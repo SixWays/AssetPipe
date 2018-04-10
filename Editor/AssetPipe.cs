@@ -93,15 +93,17 @@ namespace Sigtrap.AssetPipe {
 			return Pipeline.ProcessAssets(this);
 		}
 	}
-	public sealed class ProcessPrefabsInfo<T> : ProcessObjectInfoBase where T:Component {
+	public abstract class ProcessPrefabsInfoBase<T> : ProcessObjectInfoBase where T:Component {
 		/// <summary>Asset filter string. Uses Unity project window search syntax.</summary>
 		public string filter = Pipeline.DEFAULT_FILTER;
-		/// <summary></summary>
-		public System.Action<PrefabProcessData> onProcessPrefab;
 		/// <summary></summary>
 		public PrefabMatcher matchPrefab;
 		/// <summary></summary>
 		public ComponentMatcher<T> matchComponent;
+	}
+	public sealed class ProcessPrefabsInfo<T> : ProcessPrefabsInfoBase<T> where T:Component {
+		/// <summary></summary>
+		public System.Action<PrefabProcessData> onProcessPrefab;
 		/// <summary></summary>
 		public System.Action<List<AssetMetadata<GameObject>>> onResults;
 		
@@ -114,17 +116,11 @@ namespace Sigtrap.AssetPipe {
 			return Pipeline.ProcessPrefabs(this);
 		}
 	}
-	public sealed class ProcessComponentsInfo<T> : ProcessObjectInfoBase where T:Component {
-		/// <summary>Asset filter string. Uses Unity project window search syntax.</summary>
-		public string filter = Pipeline.DEFAULT_FILTER;
+	public sealed class ProcessComponentsInfo<T> : ProcessPrefabsInfoBase<T> where T:Component {
 		/// <summary></summary>
 		public System.Action<ComponentProcessData<T>> onProcessComponent;
 		/// <summary></summary>
-		public ComponentMatcher<T> matchComponent;
-		/// <summary></summary>
 		public ComponentSearchType componentSearchType=ComponentSearchType.ROOT_ONLY;
-		/// <summary></summary>
-		public PrefabMatcher matchPrefab;
 		/// <summary></summary>
 		public System.Action<Dictionary<AssetMetadata<GameObject>, List<T>>> onResults;
 
@@ -453,7 +449,7 @@ namespace Sigtrap.AssetPipe {
 		/// <typeparam name="T">Component type to search for.</typeparam>
 		public static System.Guid ProcessComponents<T>(ProcessComponentsInfo<T> info) where T:Component {
 			var pid = System.Guid.NewGuid();
-			AssetPipeProcessManager.StartProcess(ProcessComponentsAsync<T>(pid, info), info.onDone, pid);
+			AssetPipeProcessManager.StartProcess(ProcessPrefabsAsync<T>(pid, info), info.onDone, pid);
 			return pid;
 		}
 		#endregion
@@ -474,7 +470,9 @@ namespace Sigtrap.AssetPipe {
 
 		#region Internal
 		#region Asset Coroutines
-		static IEnumerator ProcessAssetsAsync<T>(System.Guid processId, ProcessAssetsInfo<T> info) where T:Object {
+		static IEnumerator<bool> ProcessAssetsAsync<T>(
+			System.Guid processId, ProcessAssetsInfo<T> info
+		) where T:Object {
 			var sw = new System.Diagnostics.Stopwatch();
 			double lastTick = 0;
 			sw.Start();
@@ -489,9 +487,12 @@ namespace Sigtrap.AssetPipe {
 			}
 			bool cancelled = false;
 
+			ProcessProgress progress = new ProcessProgress(0, count);
+
 			for (int i=0; i<count; ++i){
 				AssetMetadata<T> meta = new AssetMetadata<T>(guids[i]);
 				T asset = meta.asset;
+				progress = new ProcessProgress(i, count);
 
 				if (MatchAsset(meta, info.match)){					// If asset found and meets requirements, process
 					if (info.onProcessAsset != null){
@@ -502,10 +503,10 @@ namespace Sigtrap.AssetPipe {
 
 				if (info.processType == ProcessType.ASYNC){
 					if (CheckTime(sw, ref lastTick, info.tickTime)){
-						yield return null;						// Wait for next editor update
+						yield return true;						// Wait for next editor update
 					}
 				} else {
-					if (DisplayProgressBar("Processing Assets", i, count, info.processType)){
+					if (DisplayProgressBar("Processing Assets", progress, info.processType)){
 						ClearProgressBar();
 						cancelled = true;
 						break;
@@ -526,134 +527,116 @@ namespace Sigtrap.AssetPipe {
 			}
 		}
 
-		static IEnumerator ProcessPrefabsAsync<T>(System.Guid processId, ProcessPrefabsInfo<T> info) where T:Component {
+		static IEnumerator<bool> ProcessPrefabsAsync<T>(
+			System.Guid processId, ProcessPrefabsInfoBase<T> info
+		) where T:Component {
 			var sw = new System.Diagnostics.Stopwatch();
 			double lastTick = 0;
 			sw.Start();
 
-			List<AssetMetadata<GameObject>> results = null;
-			if (info.onResults != null) results = new List<AssetMetadata<GameObject>>();
+			ProcessPrefabsInfo<T> infoPrefabs = info as ProcessPrefabsInfo<T>;
+			ProcessComponentsInfo<T> infoComps = info as ProcessComponentsInfo<T>;
 
-			var guids = AssetDatabase.FindAssets(info.filter);
-			int count = guids.Length;
-			if (count == 0){
-				Debug.LogWarningFormat("No assets found in database for filter [{0}].", info.filter);
+			List<AssetMetadata<GameObject>> resultsPrefabs = null;
+			if (infoPrefabs != null && infoPrefabs.onResults != null){
+				resultsPrefabs = new List<AssetMetadata<GameObject>>();
 			}
+
+			Dictionary<AssetMetadata<GameObject>, List<T>> resultsComps = null;
+			if (infoComps != null && infoComps.onResults != null){
+				resultsComps = new Dictionary<AssetMetadata<GameObject>, List<T>>();
+			}
+
+			bool s = info.hasSelection;
+			int count = 0;
+			string[] guids = null;
+			if (s){
+				count = info.selection.Length;
+			} else {
+				guids = AssetDatabase.FindAssets(info.filter);
+				count = guids.Length;
+				if (count == 0){
+					Debug.LogWarningFormat("No assets found in database for filter [{0}].", info.filter);
+				}
+			}
+
 			bool cancelled = false;
+			ProcessProgress progress = new ProcessProgress();
 
 			for (int i=0; i<count; ++i){
-				var meta = new AssetMetadata<GameObject>(guids[i]);
+				AssetMetadata<GameObject> meta;
+				if (s){
+					meta = new AssetMetadata<GameObject>(info.selection[i]);
+				} else {
+					meta = new AssetMetadata<GameObject>(guids[i]);
+				}
+
 				GameObject prefab = meta.asset;
 
 				if (MatchPrefab(meta, info.matchPrefab)){					// Does prefab meet requirements?
-					if (MatchComponent(prefab, meta, info.matchComponent)){	// If component found and meets requirements, process
-						if (info.onProcessPrefab != null){
-							info.onProcessPrefab(new PrefabProcessData(prefab, meta, i, count));
+					if (infoPrefabs != null){
+						#region Prefab Mode
+						if (MatchComponent(prefab, meta, info.matchComponent)){	// If component found and meets requirements, process
+							if (infoPrefabs.onProcessPrefab != null){
+								infoPrefabs.onProcessPrefab(new PrefabProcessData(prefab, meta, i, count));
+							}
+							if (resultsPrefabs != null) resultsPrefabs.Add(meta);		// Add to results
 						}
-						if (results != null) results.Add(meta);		// Add to results
-					}
-				}
-				
-				if (info.processType == ProcessType.ASYNC){
-					if (CheckTime(sw, ref lastTick, info.tickTime)){
-						yield return null;								// Wait for next editor update
-					}
-				} else {
-					if (DisplayProgressBar("Processing Assets", i, count, info.processType)){
-						ClearProgressBar();
-						cancelled = true;
-						break;
-					}
-				}
-			}
-			
-			if (info.onResults != null) info.onResults(results);
-			if (info.onDone != null) info.onDone(
-				new ProcessDoneData(
-					processId, null, sw,
-					cancelled ? ProcessExitStatus.CANCELLED : ProcessExitStatus.SUCCESS					
-				) 
-			);
-			
-			if (info.processType != ProcessType.ASYNC){
-				ClearProgressBar();
-			}
-		}
-
-		static IEnumerator ProcessComponentsAsync<T>(System.Guid processId, ProcessComponentsInfo<T> info) where T:Component {
-			var sw = new System.Diagnostics.Stopwatch();
-			double lastTick = 0;
-			sw.Start();
-
-			Dictionary<AssetMetadata<GameObject>, List<T>> results = null;				// Only store results if callback given
-			if (info.onResults != null) results = new Dictionary<AssetMetadata<GameObject>, List<T>>();
-
-			var guids = AssetDatabase.FindAssets(info.filter);
-			int count = guids.Length;
-			if (count == 0){
-				Debug.LogWarningFormat("No assets found in database for filter [{0}].", info.filter);
-			}
-			bool cancelled = false;
-
-			for (int i=0; i<count; ++i){
-				AssetMetadata<GameObject> meta = new AssetMetadata<GameObject>(guids[i]);
-				GameObject prefab = meta.asset;
-				
-				if (MatchPrefab(meta, info.matchPrefab)){					// Does prefab meet requirements?
-					T[] ts = GetComponents<T>(prefab, info.componentSearchType);
-					foreach (T t in ts){
-						if (MatchComponent(t, meta, info.matchComponent)){	// If component meets requirements, process
-							if (info.onProcessComponent != null){
-								info.onProcessComponent(new ComponentProcessData<T>(t, meta, i, count));
-							}
-
-							if (results != null){						// Add to results
-								List<T> l = null;
-								if (!results.TryGetValue(meta, out l)){
-									l = new List<T>();
-									results.Add(meta, l);
+						var status = UpdateProcess(
+							i, count, info, sw, "Processing Prefabs", ref lastTick, ref progress
+						);
+						if (status == ProcessStatus.YIELDED){
+							yield return true;
+						} else if (status == ProcessStatus.CANCELLED){
+							cancelled = true;
+							break;
+						}
+						#endregion
+					} else {
+						#region Component Mode
+						T[] ts = GetComponents<T>(prefab, infoComps.componentSearchType);
+						foreach (T t in ts){
+							if (MatchComponent(t, meta, info.matchComponent)){	// If component meets requirements, process
+								if (infoComps.onProcessComponent != null){
+									infoComps.onProcessComponent(new ComponentProcessData<T>(t, meta, i, count));
 								}
-								l.Add(t);
-							}
 
-							if (info.processType == ProcessType.ASYNC){
-								if (CheckTime(sw, ref lastTick, info.tickTime)){
-									yield return null;					// Wait for next editor update
+								if (resultsComps != null){						// Add to results
+									List<T> l = null;
+									if (!resultsComps.TryGetValue(meta, out l)){
+										l = new List<T>();
+										resultsComps.Add(meta, l);
+									}
+									l.Add(t);
 								}
-							} else {
-								if (DisplayProgressBar("Processing Components", i, count, info.processType, "Prefab {0}/{1}")){
-									ClearProgressBar();
+
+								var status = UpdateProcess(
+									i, count, info, sw, "Processing Prefabs", ref lastTick, ref progress
+								);
+								if (status == ProcessStatus.YIELDED){
+									yield return true;
+								} else if (status == ProcessStatus.CANCELLED){
 									cancelled = true;
 									break;
 								}
 							}
 						}
-					}
-				}
 
-				if (info.processType == ProcessType.ASYNC){
-					if (CheckTime(sw, ref lastTick, info.tickTime)){
-						yield return null;								// Wait for next editor update
-					}
-				} else if (cancelled){
-					break;												// Break both loops if cancelled
-				} else {
-					if (DisplayProgressBar("Processing Components", i, count, info.processType, "Prefab {0}/{1}")){
-						ClearProgressBar();
-						cancelled = true;
-						break;
+						if (cancelled) break;
+						#endregion
 					}
 				}
 			}
 
-			if (info.onResults != null) info.onResults(results);
+			if (resultsPrefabs != null) infoPrefabs.onResults(resultsPrefabs);
+			if (resultsComps != null) infoComps.onResults(resultsComps);
 			if (info.onDone != null) info.onDone(
 				new ProcessDoneData(
 					processId, null, sw,
 					cancelled ? ProcessExitStatus.CANCELLED : ProcessExitStatus.SUCCESS					
 				) 
 			);
-
+			
 			if (info.processType != ProcessType.ASYNC){
 				ClearProgressBar();
 			}
@@ -661,12 +644,9 @@ namespace Sigtrap.AssetPipe {
 		#endregion
 
 		#region Scene Coroutines
-		class ValRef<T> where T:struct {
-			public T value;
-		}
-
-		#region Scene Objects
-		static IEnumerator ProcessSceneAsync<T>(System.Guid processId, ProcessSceneInfoBase<T> info) where T:Component {
+		static IEnumerator<bool> ProcessSceneAsync<T>(
+			System.Guid processId, ProcessSceneInfoBase<T> info
+		) where T:Component {
 			var sw = new System.Diagnostics.Stopwatch();
 			ValRef<double> lastTick = new ValRef<double>();
 			sw.Start();
@@ -698,7 +678,7 @@ namespace Sigtrap.AssetPipe {
 
 			ValRef<bool> cancelled = new ValRef<bool>();
 			ValRef<int> k = new ValRef<int>();
-			ValRef<float> progress = new ValRef<float>();
+			ValRef<ProcessProgress> progress = new ValRef<ProcessProgress>();
 
 			for (int i=0; i<sceneCount; ++i){
 				if (info.hasScenes){
@@ -712,15 +692,15 @@ namespace Sigtrap.AssetPipe {
 					#region Selection Mode
 					for (int j=0; j<info.selection.Length; ++j){
 						var meta = new SceneObjectMetadata(scene, info.selection[j], null);
-						var loop = LoopSceneProcess<T>(
+						var loop = LoopProcess(
 							ProcessSceneIterative(
-								processId, meta, info, infoObj, infoCmp, SelectionType.OBJECTS, j, 0,
+								processId, meta, info, infoObj, infoCmp, SelectionType.OBJECTS, 0, 0,
 								i, sceneCount, j, info.selection.Length, resultsObj, null
-							), info, sw, lastTick, progress, cancelled
+							), info, sw, "Processing Selected Objects", lastTick, progress, cancelled
 						);
 
 						while (loop.MoveNext()){
-							yield return null;
+							yield return true;
 						}
 						if (cancelled.value) break;
 					}
@@ -741,15 +721,15 @@ namespace Sigtrap.AssetPipe {
 						
 						var meta = new SceneObjectMetadata(scene, roots[j], roots[j]);
 						k.value = 0;
-						var loop = LoopSceneProcess<T>(
+						var loop = LoopProcess(
 							ProcessSceneRecursive(
 								processId, meta, info, infoObj, infoCmp, j, roots.Length, 
 								i, sceneCount, !info.hasRoots, k, resultsObj, null
-							), info, sw, lastTick, progress, cancelled
+							), info, sw, "Processing Root Objects", lastTick, progress, cancelled
 						);
 
 						while (loop.MoveNext()){
-							yield return null;
+							yield return true;
 						}
 						if (cancelled.value) break;
 					}
@@ -786,27 +766,7 @@ namespace Sigtrap.AssetPipe {
 				ClearProgressBar();
 			}
 		}
-		static IEnumerator LoopSceneProcess<T>(
-			IEnumerator loop, ProcessSceneInfoBase<T> info, System.Diagnostics.Stopwatch sw,
-			ValRef<double> lastTick, ValRef<float> progress, ValRef<bool> cancelled
-		) where T:Component {
-			while (loop.MoveNext()){
-				if (info.processType == ProcessType.ASYNC){
-					if (CheckTime(sw, lastTick, info.tickTime)){
-						yield return null;								// Wait for next editor update
-					}
-				} else {
-					float p = (float)loop.Current;
-					if (p > progress.value) progress.value = p;
-					if (DisplayProgressBar("Processing Scene Objects", progress.value, info.processType)){
-						ClearProgressBar();
-						cancelled.value = true;
-						break;
-					}
-				}
-			}
-		}
-		static IEnumerator ProcessSceneRecursive<T>(
+		static IEnumerator<ProcessProgress> ProcessSceneRecursive<T>(
 			System.Guid processId, SceneObjectMetadata data, ProcessSceneInfoBase<T> infoBase,
 			ProcessSceneObjectsInfo<T> infoAsObj, ProcessSceneComponentsInfo<T> infoAsComp, int currentRoot, 
 			int rootCount, int currentScene, int sceneCount, bool autoRoots, ValRef<int> currentObject,
@@ -818,11 +778,9 @@ namespace Sigtrap.AssetPipe {
 				currentScene, sceneCount, currentObject.value, -1, outObjResults, outCmpResults
 			);
 
-			float progress = 0;
+			ProcessProgress progress = new ProcessProgress(0);
 			while (process.MoveNext()){
-				if (process.Current != null){
-					progress = (float)process.Current;
-				}
+				progress = process.Current;
 				yield return progress;
 			}
 
@@ -840,7 +798,7 @@ namespace Sigtrap.AssetPipe {
 				}
 			}
 		}
-		static IEnumerator ProcessSceneIterative<T>(
+		static IEnumerator<ProcessProgress> ProcessSceneIterative<T>(
 			System.Guid processId, SceneObjectMetadata data, ProcessSceneInfoBase<T> infoBase,
 			ProcessSceneObjectsInfo<T> infoAsObj, ProcessSceneComponentsInfo<T> infoAsComp, 
 			SelectionType selectionType, int currentRoot, int rootCount,
@@ -853,7 +811,7 @@ namespace Sigtrap.AssetPipe {
 			if (selectionType == SelectionType.OBJECTS && objectCount <= 0){
 				Pipeline.AbortProcess(processId, "In object selection mode, must pass total object count to ProcessSceneObjectsIterative");
 			}
-			float progress = -1;
+			ProcessProgress progress = new ProcessProgress(0);
 			if (MatchSceneObject(data, infoBase.matchObject)){
 				if (infoAsObj != null){
 					#region Object Mode
@@ -912,18 +870,51 @@ namespace Sigtrap.AssetPipe {
 				}
 			}
 		}
-		#endregion
-
-		#region Scene Components
-		// TODO
-		#endregion
 		#endregion		
 
+		static IEnumerator<bool> LoopProcess(
+			IEnumerator<ProcessProgress> loop, ProcessInfoBase info, System.Diagnostics.Stopwatch sw,
+			string title, ValRef<double> lastTick, ValRef<ProcessProgress> progress, ValRef<bool> cancelled
+		){
+			while (loop.MoveNext()){
+				var status = UpdateProcess(loop.Current, info, sw, title, ref lastTick.value, ref progress.value);
+				if (status == ProcessStatus.YIELDED){
+					yield return true;
+				} else if (status == ProcessStatus.CANCELLED){
+					cancelled.value = true;
+					break;
+				}
+			}
+		}
+		static ProcessStatus UpdateProcess(
+			ProcessProgress newProgress, ProcessInfoBase info, System.Diagnostics.Stopwatch sw,
+			string title, ref double lastTick, ref ProcessProgress progress
+		){
+			if (info.processType == ProcessType.ASYNC){
+				if (CheckTime(sw, ref lastTick, info.tickTime)){
+					return ProcessStatus.YIELDED;
+				}
+			} else {
+				if (newProgress.progress > progress.progress) progress = newProgress;
+				if (DisplayProgressBar(title, progress, info.processType)){
+					ClearProgressBar();
+					return ProcessStatus.CANCELLED;
+				}
+			}
+			return ProcessStatus.RUNNING;
+		}
+		static ProcessStatus UpdateProcess(
+			int index, int count, ProcessInfoBase info, System.Diagnostics.Stopwatch sw,
+			string title, ref double lastTick, ref ProcessProgress progress
+		){
+			return UpdateProcess(new ProcessProgress(index, count), info, sw, title, ref lastTick, ref progress);
+		}
 		#region Coroutine implementation
 		private class AssetPipeProcessManager {
 			struct ProcessData {
 				public System.Guid processId {get; private set;}
-				public IEnumerator process {get; private set;}
+				public IEnumerator<bool> process {get; private set;}
+				public bool ticking {get; private set;}
 				System.Action<ProcessDoneData> onCancelled;
 				System.Diagnostics.Stopwatch _stopwatch;
 				public System.Diagnostics.Stopwatch stopwatch {
@@ -933,15 +924,22 @@ namespace Sigtrap.AssetPipe {
 					}
 				}
 
-				public ProcessData(IEnumerator process, System.Action<ProcessDoneData> onCancelled, System.Guid processId){
+				public ProcessData(IEnumerator<bool> process, System.Action<ProcessDoneData> onCancelled, System.Guid processId){
 					this.processId = processId;
 					this.process = process;
 					this.onCancelled = onCancelled;
+					ticking = true;
 					_stopwatch = new System.Diagnostics.Stopwatch();
 					_stopwatch.Start();
 				}
 				public void OnCancelled(ProcessDoneData data){
 					if (onCancelled != null) onCancelled(data);
+				}
+				public void OnTick(){
+					ticking = true;
+				}
+				public void OnYield(){
+					ticking = false;
 				}
 			}
 
@@ -958,7 +956,7 @@ namespace Sigtrap.AssetPipe {
 				}
 			}
 
-			public static void StartProcess(IEnumerator coroutine, System.Action<ProcessDoneData> onCancelled, System.Guid processId){
+			public static void StartProcess(IEnumerator<bool> coroutine, System.Action<ProcessDoneData> onCancelled, System.Guid processId){
 				Init();
 				ProcessData process = new ProcessData(coroutine, onCancelled, processId);
 				_runningProcesses.Add(processId, process);
@@ -991,16 +989,39 @@ namespace Sigtrap.AssetPipe {
 			private AssetPipeProcessManager(){}
 
 			void Update(){
-				Cleanup();										// Do cancels and aborts before and after execution, not during
+				Cleanup();	// Do cancels and aborts before and after execution, not during
 
 				foreach (var a in _runningProcesses){
-					bool running = a.Value.process.MoveNext();	// Execute next step of coroutine
-					if (!running){								// If finished, flag for removal
-						_endedProcesses.Add(a.Key);
-					}
+					a.Value.OnTick();
 				}
+				
+				// Loop until no coroutines left to tick
+				bool running = true;
+				while (running){
+					int liveProcesses = 0;
+					// Tick coroutines one yield at a time
+					foreach (var a in _runningProcesses){
+						if (!a.Value.ticking) continue;
 
-				Cleanup();
+						// Execute next step of coroutine
+						bool done = !a.Value.process.MoveNext();	
+						if (done){
+							_endedProcesses.Add(a.Key);	// If ended, flag for removal
+							continue;
+						}
+
+						bool yielded = a.Value.process.Current;
+						if (yielded){
+							a.Value.OnYield();			// If Current == true, end execution until next update
+							continue;
+						}
+
+						++liveProcesses;				// If still ticking, add to count
+					}
+					running = liveProcesses > 0;		// If no processes still ticking, end
+
+					Cleanup();
+				}
 			}
 			void Cleanup(){
 				foreach (var aborted in _abortedProcesses){		// Abort coroutines
@@ -1073,23 +1094,22 @@ namespace Sigtrap.AssetPipe {
 		}
 
 		#region Blocking Progress Bar
-		static bool DisplayProgressBar(string title, string info, bool cancelable, float progress){
+		static bool DisplayProgressBar(string title, string info, float progress, bool cancelable){
 			if (cancelable){
 				return EditorUtility.DisplayCancelableProgressBar(title, info, progress);
 			}
 			EditorUtility.DisplayProgressBar(title, info, progress);
 			return false;
 		}
-		static bool DisplayProgressBar(string title, int i, int count, bool cancelable, string infoFormat="{0}/{1}"){
-			float progress = ((float)i+1)/((float)count);
-			string info = string.Format(infoFormat, i, count);
-			return DisplayProgressBar(title, info, cancelable, progress);
+		static bool DisplayProgressBar(string title, ProcessProgress progress, bool cancelable){
+			return DisplayProgressBar(title, progress.ToString(), progress.progress, cancelable);
 		}
-		static bool DisplayProgressBar(string title, int i, int count, ProcessType pt, string infoFormat="{0}/{1}"){
-			return DisplayProgressBar(title, i, count, pt == ProcessType.BLOCKING_CANCELABLE, infoFormat);
+		static bool DisplayProgressBar(string title, ProcessProgress progress, ProcessType pt){
+			return DisplayProgressBar(title, progress, pt == ProcessType.BLOCKING_CANCELABLE);
 		}
-		static bool DisplayProgressBar(string title, float progress, ProcessType pt, string infoFormat="{0}%"){
-			return DisplayProgressBar(title, string.Format(infoFormat, Mathf.Floor(progress*100f)), pt == ProcessType.BLOCKING_CANCELABLE, progress);
+		static bool DisplayProgressBar(string title, int index, int count, bool cancelable){
+			ProcessProgress p = new ProcessProgress(index, count);
+			return DisplayProgressBar(title, p, cancelable);
 		}
 		static void ClearProgressBar(){
 			EditorUtility.ClearProgressBar();
@@ -1112,20 +1132,41 @@ namespace Sigtrap.AssetPipe {
 }
 
 namespace Sigtrap.AssetPipe.Data {
+	class ValRef<T> where T:struct {
+		public T value;
+	}
+	enum ProcessStatus {RUNNING, YIELDED, CANCELLED}
+	
 	#region Assets
 	public struct ProcessProgress {
 		public int index {get; private set;}
 		public int assetCount {get; private set;}
-		public bool isValid {get {return assetCount > 0;}}
+		float _overrideProgress;
 		public float progress {
 			get {
+				if (_overrideProgress >= 0){
+					return _overrideProgress;
+				}
 				return ((float)(index+1))/((float)assetCount);
 			}
 		}
 
 		public ProcessProgress(int index, int assetCount){
+			_overrideProgress = -1;
 			this.index = index;
 			this.assetCount = assetCount;
+		}
+		public ProcessProgress(float progress){
+			_overrideProgress = progress;
+			index = -1;
+			assetCount = -1;
+		}
+
+		public override string ToString(){
+			if (_overrideProgress >= 0){
+				return string.Format("{0:0.0}%", _overrideProgress);
+			}
+			return string.Format("{0}/{1} : {2:0.0}%", index, assetCount, progress);
 		}
 	}
 	public struct AssetMetadata<T> where T:Object {
@@ -1140,6 +1181,17 @@ namespace Sigtrap.AssetPipe.Data {
 			path = AssetDatabase.GUIDToAssetPath(guid);
 			asset = AssetDatabase.LoadAssetAtPath<T>(path);
 			isValid = asset != null;
+			name = isValid ? asset.name : "NO ASSET";
+		}
+		public AssetMetadata(T asset){
+			var p = PrefabUtility.GetPrefabParent(asset);
+			if (p == null){
+				throw new System.Exception(string.Format("GameObject {0} is not in the asset database", asset.name));
+			}
+			this.asset = (T)p;
+			path = AssetDatabase.GetAssetPath(this.asset);
+			guid = AssetDatabase.AssetPathToGUID(path);
+			isValid = this.asset != null;
 			name = isValid ? asset.name : "NO ASSET";
 		}
 	}
@@ -1228,7 +1280,7 @@ namespace Sigtrap.AssetPipe.Data {
 		public ProcessProgress progressObjects {get; private set;}
 		public ProcessProgress progressRoots {get; private set;}
 		public ProcessProgress progressScenes {get; private set;}
-		public float progressTotal {get; private set;}
+		public ProcessProgress progressTotal {get; private set;}
 
 		private SceneObjectProcessData(
 			Scene scene, GameObject gameObject, GameObject root, int currentObject
@@ -1252,9 +1304,10 @@ namespace Sigtrap.AssetPipe.Data {
 			this.selectionType = selectionType;
 			progressRoots = new ProcessProgress(currentRoot, rootCount);
 			progressScenes = new ProcessProgress(currentScene, sceneCount);
-			progressTotal = 
+			progressTotal = new ProcessProgress(
 				(float)(currentRoot + (currentScene * rootCount)) / 
-				(float)(rootCount * sceneCount);
+				(float)(rootCount * sceneCount)
+			);
 		}
 
 		/// <summary>
@@ -1285,7 +1338,7 @@ namespace Sigtrap.AssetPipe.Data {
 		public ProcessProgress progressObjects {get; private set;}
 		public ProcessProgress progressRoots {get; private set;}
 		public ProcessProgress progressScenes {get; private set;}
-		public float progressTotal {get; private set;}
+		public ProcessProgress progressTotal {get; private set;}
 
 		private SceneComponentProcessData(
 			Scene scene, T component, GameObject root, int currentObject, 
@@ -1311,9 +1364,10 @@ namespace Sigtrap.AssetPipe.Data {
 			this.selectionType = selectionType;
 			progressRoots = new ProcessProgress(currentRoot, rootCount);
 			progressScenes = new ProcessProgress(currentScene, sceneCount);
-			progressTotal = 
+			progressTotal = new ProcessProgress(
 				(float)(currentRoot + (currentScene * rootCount)) / 
-				(float)(rootCount * sceneCount);
+				(float)(rootCount * sceneCount)
+			);
 		}
 
 		/// <summary>
@@ -1325,9 +1379,10 @@ namespace Sigtrap.AssetPipe.Data {
 		) : this(scene, component, null, currentObject, currentComponent, componentCount){
 			this.selectionType = SelectionType.OBJECTS;
 			progressObjects = new ProcessProgress(currentObject, objectCount);
-			progressTotal = 
+			progressTotal = new ProcessProgress(
 				(float)(currentComponent + (currentObject * componentCount)) / 
-				(float)(componentCount * componentCount);
+				(float)(componentCount * componentCount)
+			);
 		}
 	}
 	#endregion
