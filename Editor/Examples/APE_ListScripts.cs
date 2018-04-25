@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
+using Sigtrap.AssetPipe.Data;
 
 namespace Sigtrap.AssetPipe.Examples {
 	public class APE_ListScripts : EditorWindow {
@@ -56,36 +57,34 @@ namespace Sigtrap.AssetPipe.Examples {
 
 		System.Guid _currentProcessId;
 		void StartProcess(){
-			_currentProcessId = Pipeline.ProcessAssets(
-				"t:Script", ProcessAsset,
-				// Asset matching lambda
-				(asset, metadata)=>{
-					return string.IsNullOrEmpty(_scriptNameContains) || asset.name.Contains(_scriptNameContains);
-				},
-				// Results callback
-				(results)=>{
-					Debug.LogFormat("Processed {0} assets.", results.Count);
-				},
-				// On Done callback lambda
-				(data)=>{
-					_blocker.OnProcessDoneCallback(data);
-					_guiProgress.OnProcessDoneCallback(data);
-					Repaint();
-					switch (data.exitStatus){
-						case ProcessExitStatus.SUCCESS:
-							Debug.Log(data.ToString());
-							break;
-						case ProcessExitStatus.CANCELLED:
-							Debug.LogWarning(data.ToString());
-							break;
-						case ProcessExitStatus.FAILED:
-							Debug.LogError(data.ToString());
-							break;
-					}
-				}, 
-				_processType, _tickTime
+			var p = new ProcessAssetsInfo<Object>(
+				"t:Script", ProcessAsset
 			);
-
+			p.match = (metadata)=>{
+				return string.IsNullOrEmpty(_scriptNameContains) || metadata.asset.name.Contains(_scriptNameContains);
+			};
+			p.onResults = (results)=>{
+				Debug.LogFormat("Processed {0} assets.", results.Count);
+			};
+			p.onDone = (data)=>{
+				_blocker.OnProcessDoneCallback(data);
+				_guiProgress.OnProcessDoneCallback(data);
+				Repaint();
+				switch (data.exitStatus){
+					case ProcessExitStatus.SUCCESS:
+						Debug.Log(data.ToString());
+						break;
+					case ProcessExitStatus.CANCELLED:
+						Debug.LogWarning(data.ToString());
+						break;
+					case ProcessExitStatus.FAILED:
+						Debug.LogError(data.ToString());
+						break;
+				}
+			};
+			p.processType = _processType;
+			p.tickTime = _tickTime;
+			_currentProcessId = Pipeline.ProcessAssets(p);
 			_guiProgress.OnProcessStart(_currentProcessId);	// Hand process GUID to progress bar to allow cancelling
 			_blocker.OnProcessStart();
 		}
