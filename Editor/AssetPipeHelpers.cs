@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
+using Sigtrap.AssetPipe.Data;
 
 namespace Sigtrap.AssetPipe.Helpers {
 	#region Progress Bars
