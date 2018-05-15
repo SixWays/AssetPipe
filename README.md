@@ -5,7 +5,7 @@ AssetPipe is a lightweight unified framework designed to facilitate arbitrary ba
 
 AssetPipe allows the resulting process to be run either in blocking or asynchronous mode, and allows GUI-driven and programmatic cancellation in either case, so you'll never be staring at an editor locked for god-knows-how-long again.
 
-Disclaimers - AssetPipe has *not* yet been heavily tested. It does *not* have exception handling built-in (yet?).
+Disclaimers - AssetPipe is pre-pre-alpha. API is in flux. It has *not* yet been heavily tested. It does *not* have exception handling built-in (yet?).
 
 #### Example GUI built around AssetPipe
 ![Example GUI built around AssetPipe](https://i.imgur.com/orZXsJ1.png)
@@ -29,15 +29,22 @@ public class BatchProcessorExample {
   System.Guid processId;
 
   public void Go(){
-    processId = Pipeline.ProcessAssets( // Returns processId for programmatic cancel or abort
-      "t:Script",       // Filter string for searching AssetDatabase
-      ProcessAsset,     // Each matching asset is passed to this callback for processing
-      MatchAsset,       // Assets passed into this callback - return true for matching assets (optional)
-      ResultsCallback,  // After process completes, collection of results passed to this callback (optional)
-      OnDone,           // Called when process ends whether success, cancel or failure (optional)
-      ProcessType.ASYNC // Should process be ASYNC, BLOCKING or BLOCKING_CANCELABLE? (defaults to BLOCKING)
-      0.1               // Max time per tick for ASYNC processes
-    );
+	// Create a ProcessAssetsInfo instance to specify processing
+	// Constructor takes the minimum required arguments
+	ProcessAssetsInfo<Material> p = new ProcessAssetsInfo<Material>(
+		"my search filter", 			// Filter string for searching AssetDatabase
+		ProcessAsset					// Each matching asset is passed to this callback for processing
+	);
+	p.match = MatchAsset;				// Assets passed into this callback - return true for matching assets (optional)
+	p.onResults = ResultsCallback;		// After process completes, results passed to this callback (optional)
+	p.onDone = OnDone;					// Called when process ends whether success, cancel or failure (optional)
+	p.processType = ProcessType.ASYNC;	// Should process be ASYNC, BLOCKING or BLOCKING_CANCELABLE? (defaults to BLOCKING)
+	p.tickTime = 0.1f;					// Max time per tick for ASYNC processes before yielding
+	
+	// Any and all callbacks can be lambdas.
+	// All callbacks pass a single object for simple lambda declaration.
+	
+	processId = StartProcess();			// Start processing. Returns GUID for Pipeline.CancelProcess(guid)
   }
   
   #region Process Callbacks
@@ -45,12 +52,12 @@ public class BatchProcessorExample {
     // Data contains the asset, database metadata, and global process data (e.g. percent complete)
     // This method could also call back into GUI code to update a progress bar (helpers provided for this)
   }
-  bool MatchAsset(Object asset, AssetMetadata<Object> meta){
+  bool MatchAsset(AssetMetadata<Object> data){
     // Passes almost all the same data as AssetProcessData
     // Perform arbitrary tests on asset here to see whether you want it processed
     return true;
   }
-  void ResultsCallback(List<Object> results){
+  void ResultsCallback(List<AssetMetadata<T>> results){
     // Final post-processing? Debug message noting how many assets were actually processed?
   }
   void OnDone(ProcessDoneData data){

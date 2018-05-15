@@ -43,10 +43,42 @@ namespace Sigtrap.AssetPipe {
 	#endregion
 
 	#region Match Delegates
+	/// <summary>
+	/// Passes an <cref>AssetMetadata</cref>&lt;T&gt; and returns a bool.
+	/// Return <cref>true</cref> to include asset in processing.
+	/// </summary>
+	/// <param name="metadata">Metadata for the asset.</param>
+	/// <typeparam name="T">Base Unity Object type of assets being considered.</typeparam>
 	public delegate bool AssetMatcher<T>(AssetMetadata<T> metadata) where T:Object;
+
+	/// <summary>
+	/// Passes an <cref>AssetMetadata</cref>&lt;GameObject&gt; and returns a bool.
+	/// Return <cref>true</cref> to include prefab in processing.
+	/// </summary>
+	/// <param name="metadata">Metadata for the prefab.</param>
 	public delegate bool PrefabMatcher(AssetMetadata<GameObject> metadata);
+
+	/// <summary>
+	/// Passes a <cref>ComponentData</cref>&lt;T&gt; and returns a bool.
+	/// Return <cref>true</cref> to include component in processing.
+	/// </summary>
+	/// <param name="data">Metadata for the asset.</param>
+	/// <typeparam name="T">Base Component type of components being considered.</typeparam>
 	public delegate bool ComponentMatcher<T>(ComponentData<T> data) where T:Component;
+
+	/// <summary>
+	/// Passes a <cref>SceneObjectMetadata</cref> and returns a bool.
+	/// Return <cref>true</cref> to include object in processing.
+	/// </summary>
+	/// <param name="metadata">Metadata for the scene object.</param>
 	public delegate bool SceneObjectMatcher(SceneObjectMetadata metadata);
+
+	/// <summary>
+	/// Passes a <cref>SceneComponentData</cref>&lt;T&gt; and returns a bool.
+	/// Return <cref>true</cref> to include component in processing.
+	/// </summary>
+	/// <param name="data">Metadata for the component.</param>
+	/// <typeparam name="T">Base Component type of components being considered.</typeparam>
 	public delegate bool SceneComponentMatcher<T>(SceneComponentData<T> data) where T:Component;
 	#endregion
 
@@ -75,7 +107,12 @@ namespace Sigtrap.AssetPipe {
 		public string filter;
 		/// <summary></summary>
 		public System.Action<AssetProcessData<T>> onProcessAsset;
-		/// <summary></summary>
+		/// <summary>
+		/// Passes an <cref>AssetMetadata</cref>&lt;T&gt; and returns a bool.
+		/// Return <cref>true</cref> to include asset in processing.
+		/// </summary>
+		/// <param name="metadata">Metadata for the asset.</param>
+		/// <typeparam name="T">Base Unity Object type of assets being considered.</typeparam>
 		public AssetMatcher<T> match;
 		/// <summary></summary>
 		public System.Action<List<AssetMetadata<T>>> onResults;
@@ -96,9 +133,18 @@ namespace Sigtrap.AssetPipe {
 	public abstract class ProcessPrefabsInfoBase<T> : ProcessObjectInfoBase where T:Component {
 		/// <summary>Asset filter string. Uses Unity project window search syntax.</summary>
 		public string filter = Pipeline.DEFAULT_FILTER;
-		/// <summary></summary>
+		/// <summary>
+		/// Passes an <cref>AssetMetadata</cref>&lt;GameObject&gt; and returns a bool.
+		/// Return <cref>true</cref> to include prefab in processing.
+		/// </summary>
+		/// <param name="metadata">Metadata for the prefab.</param>
 		public PrefabMatcher matchPrefab;
-		/// <summary></summary>
+		/// <summary>
+		/// Passes a <cref>ComponentData</cref>&lt;T&gt; and returns a bool.
+		/// Return <cref>true</cref> to include component in processing.
+		/// </summary>
+		/// <param name="data">Metadata for the asset.</param>
+		/// <typeparam name="T">Base Component type of components being considered.</typeparam>
 		public ComponentMatcher<T> matchComponent;
 	}
 	public sealed class ProcessPrefabsInfo<T> : ProcessPrefabsInfoBase<T> where T:Component {
@@ -181,9 +227,18 @@ namespace Sigtrap.AssetPipe {
 		public string[] scenePaths;
 		/// <summary></summary>
 		public StringMatcher nameMatch;
-		/// <summary></summary>
+		/// <summary>
+		/// Passes a <cref>SceneComponentData</cref>&lt;T&gt; and returns a bool.
+		/// Return <cref>true</cref> to include component in processing.
+		/// </summary>
+		/// <param name="data">Metadata for the component.</param>
+		/// <typeparam name="T">Base Component type of components being considered.</typeparam>
 		public SceneComponentMatcher<T> matchComponent;
-		/// <summary></summary>
+		/// <summary>
+		/// Passes a <cref>SceneObjectMetadata</cref> and returns a bool.
+		/// Return <cref>true</cref> to include object in processing.
+		/// </summary>
+		/// <param name="metadata">Metadata for the scene object.</param>
 		public SceneObjectMatcher matchObject;
 
 		public bool hasRoots {get {return roots != null && roots.Length > 0;}}
