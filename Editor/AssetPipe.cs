@@ -1239,7 +1239,11 @@ namespace Sigtrap.AssetPipe.Data {
 			name = isValid ? asset.name : "NO ASSET";
 		}
 		public AssetMetadata(T asset){
+			#if UNITY_2018_2_OR_NEWER
+			var p = PrefabUtility.GetCorrespondingObjectFromSource(asset);
+			#else
 			var p = PrefabUtility.GetPrefabParent(asset);
+			#endif
 			if (p == null){
 				throw new System.Exception(string.Format("GameObject {0} is not in the asset database", asset.name));
 			}
