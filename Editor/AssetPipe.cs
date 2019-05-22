@@ -750,7 +750,7 @@ namespace Sigtrap.AssetPipe {
 						var loop = LoopProcess(
 							ProcessSceneIterative(
 								processId, meta, info, infoObj, infoCmp, SelectionType.OBJECTS, 0, 0,
-								i, sceneCount, j, info.selection.Length, resultsObj, null
+								i, sceneCount, j, info.selection.Length, resultsObj, resultsCmp
 							), info, sw, "Processing Selected Objects", lastTick, progress, cancelled
 						);
 
@@ -779,7 +779,7 @@ namespace Sigtrap.AssetPipe {
 						var loop = LoopProcess(
 							ProcessSceneRecursive(
 								processId, meta, info, infoObj, infoCmp, j, roots.Length, 
-								i, sceneCount, !info.hasRoots, k, resultsObj, null
+								i, sceneCount, !info.hasRoots, k, resultsObj, resultsCmp
 							), info, sw, "Processing Root Objects", lastTick, progress, cancelled
 						);
 
@@ -894,7 +894,7 @@ namespace Sigtrap.AssetPipe {
 					var ts = GetComponents<T>(data.gameObject, infoAsComp.componentSearchType);
 					for (int i=0; i<ts.Length; ++i){
 						T t = ts[i];
-						if (MatchSceneComponent(data, infoBase.matchComponent)){
+						if (MatchSceneComponent(t, data, infoBase.matchComponent)){
 							SceneComponentProcessData<T> p;
 							if (selectionType != SelectionType.OBJECTS){
 								p = new SceneComponentProcessData<T>(
